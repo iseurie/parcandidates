@@ -5,7 +5,9 @@ extern crate futures;
 extern crate regex;
 extern crate hyper;
 extern crate reqwest;
+#[cfg(feature = "pooling")]
 extern crate num_cpus;
+#[cfg(feature = "pooling")]
 extern crate chan;
 
 use futures::{future, Future, Stream};
@@ -44,15 +46,84 @@ fn trawl_net_pg<C: Connect>(http: &Client<C>, uri: Uri) ->
         })
 }
 
-fn main() {
+fn trawl_prn<C: Connect>(http: &Client<C>, uri: Uri)
+        -> impl Future<Item=(), Error=hyper::Error> {
     use std::io::{self, Write};
-    use std::str::FromStr;
-    use select::document::Document;
-    use tokio_core::reactor::Core;
-    use std::time::Instant;
-    use std::thread;
+    trawl_net_pg(&http, uri)
+        .and_then(|ips| {
+            ips.for_each(|ip| {
+                let stdout = io::stdout();
+                let mut lck = stdout.lock();
+                let mut octets = ip.iter();
+                for _ in 0..3 {
+                    let _ = lck.write(octets.next().unwrap().to_string().as_bytes());
+                    let _ = lck.write(b".");
+                }
+                let _ = lck.write(octets.next().unwrap().to_string().as_bytes());
+                let _ = lck.write(b"\n");
+                future::ok(())
+            })
+        })
+}
 
-    let stdout = io::stdout();
+use tokio_core::reactor::Core;
+
+#[cfg(feature = "pooling")]
+fn crawl(net_page_uris: impl Iterator<Item=String>) {
+    use std::thread;
+    
+    let (uric, rxuri) = {
+        let (tx, rx) = chan::async();
+        let c = uristrs.map(|s| tx.send(s))
+                       .count();
+        (c, rx)
+    };
+    let cpuc = num_cpus::get();
+    println!("Spawning {:?} crawlers...", cpuc);
+    for _ in 0..cpuc {
+        let rxuri = rxuri.clone();
+        let hdl = thread::spawn(move || {
+            let rxuri = rxuri.clone();
+            let mut lp = Core::new().expect("create thread-local event loop");
+            let http = Client::new(&lp.handle());
+            for uristr in rxuri {
+                if let Ok(uri) = Uri::from_str(uristr.as_str()) {
+                    // println!("GET {}...", uristr);
+                    let res = lp.run(trawl_prn(&http, uri));
+                    if let Err(what) = res {
+                        eprintln!("GET {}: {}", uristr, what);
+                    }
+                }
+            }
+        });
+        hdl.join().expect("join child thread");
+    }
+}
+
+#[cfg(not(feature = "pooling"))]
+fn crawl(uristrs: impl Iterator<Item=String>) {
+    use std::str::FromStr;
+
+    println!("Single-threaded pollevt crawling...");
+    let mut lp = Core::new().expect("create event loop");
+    let http = Client::new(&lp.handle());
+    for uristr in uristrs {
+        if let Ok(uri) = Uri::from_str(uristr.as_str()) {
+            // println!("GET {}...", uristr);
+            let res = lp.run(trawl_prn(&http, uri));
+            if let Err(what) = res {
+                eprintln!("GET {}: {}", uristr, what);
+            }
+        }
+    }
+}
+
+fn main() {
+    use select::document::Document;
+    use std::time::Instant;
+
+    let start_time = Instant::now();
+
     let networks = reqwest::get("http://irc.netsplit.de/networks/")
         .expect("retrieve IRC listing")
         .text()
@@ -60,55 +131,12 @@ fn main() {
     let doc = Document::from(networks.as_str());
     use select::predicate::{Predicate, Class, Name};
     let netw_uri_p = Class("competitor").and(Name("a"));
-    // queue URIs into a channel and close it (lexical scope / Drop)
-    let wg = chan::WaitGroup::new();
-    let (uric, rxuri) = {
-        let (tx, rx) = chan::async();
-        let c = doc.find(netw_uri_p)
-                   .filter_map(|n| n.attr("href"))
-                   .map(|s| String::from("http://irc.netsplit.de") + s)
-                   .map(|s| tx.send(s))
-                   .count();
-        wg.add(c as i32);
-        (c, rx)
-    };
-
-    let start_time = Instant::now();
-    for _ in 0..num_cpus::get() {
-        let wg = wg.clone();
-        let rxuri = rxuri.clone();
-        let hdl = thread::spawn(move || {
-            let rxuri = rxuri.clone();
-            let mut lp = Core::new().expect("create thread-local event loop");
-            let http = Client::new(&lp.handle());
-            let stdout = io::stdout();
-            for uristr in rxuri {
-                if let Ok(uri) = Uri::from_str(uristr.as_str()) {
-                    let reqfut
-                    = trawl_net_pg(&http, uri).and_then(|ips| {
-                        ips.for_each(|ip| {
-                            let mut octets = ip.iter();
-                            let mut lck = stdout.lock();
-                            for _ in 0..3 {
-                                let _ = lck.write(octets.next().unwrap().to_string().as_bytes());
-                                let _ = lck.write(b".");
-                            }
-                            let _ = lck.write(octets.next().unwrap().to_string().as_bytes());
-                            let _ = lck.write(b"\n");
-                            future::ok(())
-                        })
-                    });
-                    // println!("GET {}...", uristr);
-                    let res = lp.run(reqfut);
-                    if let Err(what) = res {
-                        eprintln!("GET {}: {}", uristr, what);
-                    }
-                }
-                wg.done();
-            }
-        });
-        hdl.join().expect("join child thread");
-    }
+    let uristrs = doc.find(netw_uri_p)
+                     .filter_map(|n| n.attr("href"))
+                     .map(|s| String::from("http://irc.netsplit.de") + s)
+                     .collect::<Vec<_>>();
+    let uric = uristrs.len();
+    crawl(uristrs.into_iter());
     let (sec, nsec) = {
         let e = start_time.elapsed();
         (e.as_secs(), e.subsec_nanos())
