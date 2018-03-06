@@ -1,0 +1,15 @@
+[package]
+name = "mibbit-scraper"
+version = "0.1.0"
+authors = ["алый <iseurie@gmail.com>"]
+
+[dependencies]
+select          = "0.4"
+tokio-core      = "0.1"
+futures         = "0.1"
+futures-cpupool = "0.1"
+hyper           = "0.11"
+reqwest         = "0.8"
+regex           = "0.2"
+num_cpus		= "1.0"
+chan			= "0.1"

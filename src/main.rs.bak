@@ -1,0 +1,76 @@
+#![feature(conservative_impl_trait, universal_impl_trait)]
+extern crate select;
+extern crate tokio_core;
+extern crate tokio_curl;
+extern crate curl;
+extern crate futures;
+extern crate regex;
+extern crate hyper;
+
+use std::io::{self, Write};
+use futures::{future, Future};
+use regex::bytes::Regex;
+use hyper::{Uri, Client, Response, Request};
+
+
+fn trawl_net_pg<C, B>(http: &Client<C, B>, uri: Uri) -> impl Future<Item=Vec<[u8; 4]>, Error=hyper::Error> {
+    let ip_re = Regex::new(r"\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\b").expect("compile regex");
+    let mut rtn = Vec::with_capacity(1);
+    http.get(uri).map(Request::body).and_then(|data| {
+        let ips = ip_re.find_iter(data).map(|ipv4| {
+            let mut octets = [0u8; 4];
+            let octetstrs = ipv4.as_bytes()
+                                .split(|b| *b == '.' as u8)
+                                .enumerate();
+            for (ostri, octetstr) in octetstrs {
+                let mut octet = 0u8;
+                for (i, dbyte) in octetstr.iter().rev().enumerate() {
+                    octet += (dbyte - '0' as u8) * 10u8.pow(i as u32);
+                }
+                octets[ostri] = octet;
+            }
+            octets
+        });
+        rtn.extend(ips);
+    })?;
+}
+
+fn main() {
+    use select::document::Document;
+    use tokio_core::reactor::Core;
+
+    let stdout = io::stdout();
+    let mut lp = Core::new().unwrap();
+    let http = Client::new(lp.handle());
+    http.get("https://irc.netsplit.de/networks/").map(Response::body)
+        .and_then(|data| {
+            let doc = Document::from_read(data.as_slice()).expect("read DOM");
+            use select::predicate::{Predicate, Class, Name};
+            let netw_uri_p = Class("competitor").and(Name("a"));
+            let mut outhdl = stdout.lock();
+            for node in doc.find(netw_uri_p) {
+                if let Some(uri) = node.attr("href") {
+                    match trawl_net_pg(&http, uri) {
+                        Ok(ipfut) => {
+                            ipfut.and_then(|ips| {
+                                for ip in ips {
+                                    let mut octets = ip.iter();
+                                    for octet in octets.take(3) {
+                                        outhdl.write(octet.to_string().as_bytes());
+                                        outhdl.write(b".");
+                                    }
+                                    outhdl.write(octets.next().unwrap().to_string().as_bytes());
+                                    outhdl.write(b"\n");
+                                }
+                                future::ok(())
+                            });
+                        },
+                        Err(e) => eprintln!("failed on network `{:?}`: {:?}", uri, e)
+                    }
+                }
+            }
+        }).or_else(|e| {
+            panic!("fail retrieve IRC listings");
+        });
+
+}

@@ -1,0 +1,20 @@
+   Compiling mibbit-scraper v0.1.0 (file:///home/ahli/code/mibbit-scraper)
+warning: unused variable: `stdout`
+  --> src/main.rs:54:9
+   |
+54 |     let stdout = io::stdout();
+   |         ^^^^^^ help: consider using `_stdout` instead
+   |
+   = note: #[warn(unused_variables)] on by default
+
+warning: variable does not need to be mutable
+  --> src/main.rs:63:9
+   |
+63 |     let mut rxuri = {
+   |         ----^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: #[warn(unused_mut)] on by default
+
+    Finished dev [unoptimized + debuginfo] target(s) in 5.17 secs
