@@ -79,7 +79,7 @@ fn crawl(net_page_uris: impl Iterator<Item=String>) {
         (c, rx)
     };
     let cpuc = num_cpus::get();
-    println!("Spawning {:?} crawlers...", cpuc);
+    // println!("Spawning {:?} crawlers...", cpuc);
     for _ in 0..cpuc {
         let rxuri = rxuri.clone();
         let hdl = thread::spawn(move || {
@@ -104,7 +104,7 @@ fn crawl(net_page_uris: impl Iterator<Item=String>) {
 fn crawl(uristrs: impl Iterator<Item=String>) {
     use std::str::FromStr;
 
-    println!("Single-threaded pollevt crawling...");
+    // println!("Single-threaded pollevt crawling...");
     let mut lp = Core::new().expect("create event loop");
     let http = Client::new(&lp.handle());
     for uristr in uristrs {
