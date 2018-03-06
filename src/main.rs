@@ -14,6 +14,7 @@ use futures::{future, Future, Stream};
 use regex::bytes::Regex;
 use hyper::{Uri, Client};
 use hyper::client::Connect;
+use std::str::FromStr;
 
 fn scrape_ips(haystack: &[u8]) -> Vec<[u8; 4]> {
     let needle = Regex::new(r"\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\b").expect("compile regex");
@@ -69,20 +70,20 @@ fn trawl_prn<C: Connect>(http: &Client<C>, uri: Uri)
 use tokio_core::reactor::Core;
 
 #[cfg(feature = "pooling")]
-fn crawl(net_page_uris: impl Iterator<Item=String>) {
+fn crawl(uristrs: impl Iterator<Item=String>) {
     use std::thread;
     
-    let (uric, rxuri) = {
+    let rxuri = {
         let (tx, rx) = chan::async();
-        let c = uristrs.map(|s| tx.send(s))
-                       .count();
-        (c, rx)
+        uristrs.for_each(|s| tx.send(s));
+        rx
     };
     let cpuc = num_cpus::get();
     // println!("Spawning {:?} crawlers...", cpuc);
+    let mut hdls = Vec::with_capacity(cpuc);
     for _ in 0..cpuc {
         let rxuri = rxuri.clone();
-        let hdl = thread::spawn(move || {
+        hdls.push(thread::spawn(move || {
             let rxuri = rxuri.clone();
             let mut lp = Core::new().expect("create thread-local event loop");
             let http = Client::new(&lp.handle());
@@ -95,15 +96,13 @@ fn crawl(net_page_uris: impl Iterator<Item=String>) {
                     }
                 }
             }
-        });
-        hdl.join().expect("join child thread");
+        }));
     }
+    hdls.into_iter().for_each(|h| h.join().expect("join child thread"));
 }
 
 #[cfg(not(feature = "pooling"))]
 fn crawl(uristrs: impl Iterator<Item=String>) {
-    use std::str::FromStr;
-
     // println!("Single-threaded pollevt crawling...");
     let mut lp = Core::new().expect("create event loop");
     let http = Client::new(&lp.handle());
